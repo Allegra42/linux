@@ -4,6 +4,8 @@
 #include <linux/i2c.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
+#include <linux/uaccess.h>
+#include <linux/string.h>
 
 #define RED 0x04
 #define GREEN 0x03
@@ -22,14 +24,123 @@ struct color_t {
 
 struct grove_t {
    dev_t devnum;
+   struct cdev cdev;
    struct i2c_client *rgb_client; 
    struct i2c_client *lcd_client;
    struct color_t color;
+   char display_text[34];
 };
 
-static struct cdev *grove_cdev = NULL;
 static struct class *grove_class = NULL;
 
+
+ssize_t grove_read(struct file *file, char __user *buf, size_t size, loff_t *off) {
+    struct grove_t *grove;
+    char send [100];
+    int actual, not_copied = 0;
+
+    grove = file->private_data;
+
+    actual = sprintf(send, "Grove LCD RGB Status:\nRed: 0x%x\nGreen: 0x%x\nBlue: 0x%x\nDisplay Text %s\n", 
+            grove->color.red, grove->color.green, grove->color.blue, grove->display_text);
+
+    if ((int)*off > actual) {
+        return 0;
+    }
+    actual = min(actual+1, (int)size);
+
+    not_copied = copy_to_user(buf, send, actual);
+    if (not_copied) {
+        return -EFAULT;
+    }
+    *off += actual;
+
+    return actual; 
+}
+
+ssize_t grove_write(struct file *file, const char __user *buf, size_t size, loff_t *off) {
+    // Especially write is more meaningful for the LCD part, but as these is not working at the moment
+    // we one for RGB as an example and for testing.
+   
+    struct grove_t *grove;
+    int ret = 0;
+    int i = 0;
+    int actual = 0;
+    int not_copied = 0;
+    char kbuf[15]; // assumed for the rgb string, change for real lcd impl.
+    char *tmp;
+    char *ptr;
+
+    grove = file->private_data;
+
+    if (*off > 15) {
+        return -EINVAL;
+    }
+
+    actual = min(15, (int)size);
+    not_copied = copy_from_user(kbuf, buf, actual);
+    if (not_copied) {
+        return -EFAULT;
+    }
+
+    *off += size;
+    tmp = kbuf;
+
+ /* lock(&grove_rgb->lock); */
+
+    while ( (ptr = strsep(&tmp, " ")) !=  NULL) {
+        if (i == 0 && ptr[0] == 'r') {
+            ret = kstrtou8(++ptr, 10, &grove->color.red);
+        } else if (i == 1 && ptr[0] == 'g') {
+            ret = kstrtou8(++ptr, 10, &grove->color.green);
+        } else if (i == 2 && ptr[0] == 'b') {
+            ret =kstrtou8(++ptr, 10, &grove->color.blue);
+        } else {
+            pr_err("Wrong input format!\n Use r<0-255> g<> b<>\n");
+            goto fail;
+        }
+        i++;
+    }
+
+    struct i2c_cmd_t cmds[] = {
+        {RED, grove->color.red},
+        {GREEN, grove->color.green},
+        {BLUE, grove->color.blue},
+    };
+
+    for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
+        ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
+        if (ret) {
+            dev_err(&grove->rgb_client->dev, "failed to set the RGB backlight\n");
+            goto fail;
+        }
+    }
+    
+    return size;
+    
+fail:
+    //unlock
+    return ret;
+}
+
+static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
+    
+    return 0;
+}
+
+static int grove_open(struct inode *inode, struct file *file) {
+    struct grove_t *grove;
+
+    grove = container_of(inode->i_cdev, struct grove_t, cdev);
+    file->private_data = grove;
+
+    return 0;
+}
+
+static int grove_release(struct inode *inode, struct file *file) {
+    file->private_data = NULL;
+    return 0;
+}
 
 static int grove_init_lcd(struct grove_t *grove) {
     // TODO write initialization
@@ -41,6 +152,9 @@ static int grove_init_rgb(struct grove_t *grove) {
     int i = 0;
     int ret = 0;
 
+    grove->color.green = 0xff;
+    snprintf(grove->display_text, 10, "%s\n", "testdata");
+
     struct i2c_cmd_t cmds[] = {
         {0x00, 0x00},
         {0x01, 0x00},
@@ -49,8 +163,6 @@ static int grove_init_rgb(struct grove_t *grove) {
         {GREEN, grove->color.green},
         {BLUE, grove->color.blue},
     };
-
-    grove->color.green = 0xff;
 
     dev_info(&grove->rgb_client->dev, "%s\n", __func__);
 
@@ -61,9 +173,20 @@ static int grove_init_rgb(struct grove_t *grove) {
             return ret;
         }
     }
+
     return 0;
 }
 
+static struct file_operations grove_fops = {
+    .owner          = THIS_MODULE,
+    .open           = grove_open,
+    .release        = grove_release,
+    .read           = grove_read,
+    .write          = grove_write,
+    .unlocked_ioctl = grove_ioctl,
+};
+
+// new API? we do not need i2c_device_id...
 static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id) {
     int ret = 0;
     struct grove_t *grove;
@@ -87,17 +210,18 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
         goto free_class;
     }
 
-    grove_cdev = cdev_alloc();
-    if (IS_ERR(grove_cdev)) {
-        dev_err(dev, "failed to allocate cdev\n");
-        goto free_devnum;
+    cdev_init(&grove->cdev, &grove_fops);
+    grove->cdev.owner = THIS_MODULE;
+
+    if (cdev_add(&grove->cdev, grove->devnum, 1)) {
+        goto free_cdev;
     }
 
     device = device_create(grove_class, NULL, grove->devnum, "%s", "grove");
     if (IS_ERR(device)) {
         dev_err(dev, "failed to create dev entry\n");
         goto free_cdev;
-    }
+    }  
 
     grove->rgb_client = client;
     i2c_set_clientdata(client, grove);
@@ -117,8 +241,8 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
     // Henc the following handling is not 100% as it should be. It is a fail-safe, variant where the
     // second I2C slave is optional.
     grove->lcd_client = i2c_new_secondary_device(grove->rgb_client, "lcd", 0x3e);
-    if (IS_ERR(grove->lcd_client)) {
-        // return -EINVAL;
+    if (grove->lcd_client == NULL) {
+        // return -ENODEV;
         dev_info(dev, "can not fetch secondary I2C device\n");
     } 
     // If we are sure the second device is / should be available, the else is not needed
@@ -139,13 +263,13 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
 free_device:
     device_destroy(grove_class, grove->devnum);
 free_cdev:
-    cdev_del(grove_cdev);
+    cdev_del(&grove->cdev);
 free_devnum:
     unregister_chrdev_region(grove->devnum, 1);
 free_class:
     class_destroy(grove_class);
     kfree(grove);
-    return -EIO;
+    return -EIO; 
 }
 
 static int grove_remove(struct i2c_client *client) {
@@ -153,15 +277,15 @@ static int grove_remove(struct i2c_client *client) {
     int ret = 0;
     struct grove_t *grove = i2c_get_clientdata(client);
     
+    grove->color.red = 0x00;
+    grove->color.green = 0x00;
+    grove->color.blue = 0x00;
+    
     struct i2c_cmd_t cmds[] = {
         {RED, grove->color.red},
         {GREEN, grove->color.green},
         {BLUE, grove->color.blue},
     };
-
-    grove->color.red = 0x00;
-    grove->color.green = 0x00;
-    grove->color.blue = 0x00;
 
     dev_info(&client->dev, "%s\n", __func__);
 
@@ -173,12 +297,16 @@ static int grove_remove(struct i2c_client *client) {
         }
     }
 
-
     /* if (grove->lcd_client) {
      *     i2c_unregister_device(grove->lcd_client);
      * }
      * i2c_unregister_device(grove->rgb_client); */
-
+    
+    device_destroy(grove_class, grove->devnum);
+    /* module_put(grove->cdev.owner); */
+    cdev_del(&grove->cdev);
+    unregister_chrdev_region(grove->devnum, 1);
+    class_destroy(grove_class); 
     kfree(grove);
 
     return 0;
@@ -190,11 +318,6 @@ static struct of_device_id grove_of_idtable[] = {
 };
 MODULE_DEVICE_TABLE(of, grove_of_idtable);
 
-/* static struct i2c_device_id grove_i2c_idtable[] = {
- *     {"rgb", 0},
- *     { }
- * };
- * MODULE_DEVICE_TABLE(i2c, grove_i2c_idtable); */
 
 static struct i2c_driver grove_driver = {
     .driver = {
@@ -202,7 +325,6 @@ static struct i2c_driver grove_driver = {
         /* .pm */
         .of_match_table = grove_of_idtable
     },
-    /* .id_table = grove_i2c_idtable, */
     .probe = grove_probe,
     .remove = grove_remove,
 };
