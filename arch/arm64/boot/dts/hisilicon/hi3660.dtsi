@@ -412,14 +412,6 @@
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2c0_pmx_func &i2c0_cfg_func>;
 			status = "disabled";
-            grove-rgb@62 {
-                compatible = "grove,rgb";
-                reg = <0x62>;
-            };
-            grove-lcd@3e {
-                compatible = "grove,lcd";
-                reg = <0x3e>;
-            };  
 		};
 
 		i2c1: i2c@ffd72000 {

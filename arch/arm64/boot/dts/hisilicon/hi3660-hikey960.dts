@@ -521,6 +521,11 @@
 	/* On Low speed expansion */
 	label = "LS-I2C0";
 	status = "okay";
+    grovei2c: grove-i2c@3e {
+        compatible = "grove,lcd";
+        reg = <0x3e 0x62>;
+        reg-names = "grovelcd", "grovergb";
+    };
 };
 
 &i2c1 {

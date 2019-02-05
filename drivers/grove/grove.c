@@ -145,6 +145,30 @@ static int grove_release(struct inode *inode, struct file *file) {
 static int grove_init_lcd(struct grove_t *grove) {
     // TODO write initialization
     // check if the client exists!
+    int i = 0;
+    int ret = 0;
+
+    struct i2c_cmd_t cmds[] = {
+        {0x80, 0x01},
+        {0x80, 0x02},
+        {0x80, 0x0c},
+        {0x80, 0x28},
+        {0x40, 'T'},
+        {0x40, 'E'},
+        {0x40, 'S'},
+        {0x40, 'T'},
+    };
+
+    dev_info(&grove->lcd_client->dev, "%s\n", __func__);
+
+    for (i = 0; i < (int) (sizeof(cmds) / sizeof(*cmds)); i++) {
+        dev_info(&grove->lcd_client->dev, "%s cmd 0x%x val 0x%x\n", __func__, cmds[i].cmd, cmds[i].val);
+        ret = i2c_smbus_write_byte_data(grove->lcd_client, cmds[i].cmd, cmds[i].val);
+        if (ret) {
+            dev_err(&grove->lcd_client->dev, "failed to initialize the LCD\n");
+            return ret;
+        }
+    }
     return 0;
 }
 
@@ -166,7 +190,7 @@ static int grove_init_rgb(struct grove_t *grove) {
 
     dev_info(&grove->rgb_client->dev, "%s\n", __func__);
 
-    for(i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
+    for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
         ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
         if (ret) {
             dev_err(&grove->rgb_client->dev, "failed to initialize the RGB backlight\n");
@@ -223,11 +247,11 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
         goto free_cdev;
     }  
 
-    grove->rgb_client = client;
+    grove->lcd_client = client;
     i2c_set_clientdata(client, grove);
-    ret = grove_init_rgb(grove);
+    ret = grove_init_lcd(grove);
     if (ret) {
-        dev_err(dev, "failed to init RGB, free resources\n");
+        dev_err(dev, "failed to init LCD, free resources\n");
         goto free_device;
     }
 
@@ -240,20 +264,18 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
     // main device (matching).
     // Henc the following handling is not 100% as it should be. It is a fail-safe, variant where the
     // second I2C slave is optional.
-    grove->lcd_client = i2c_new_secondary_device(grove->rgb_client, "lcd", 0x3e);
-    if (grove->lcd_client == NULL) {
-        // return -ENODEV;
+    grove->rgb_client = i2c_new_secondary_device(grove->lcd_client, "grovergb", 0x62);
+    if (grove->rgb_client == NULL) {
+        return -ENODEV;
         dev_info(dev, "can not fetch secondary I2C device\n");
     } 
     // If we are sure the second device is / should be available, the else is not needed
     // Instead, uncomment the return above, make dev_info to dev_err
-    else {
-        i2c_set_clientdata(grove->lcd_client, grove);
-        ret = grove_init_lcd(grove);
-        if (ret) {
-            dev_err(dev, "failed to init LCD, free resources\n");
-            goto free_device;
-        }
+    i2c_set_clientdata(grove->rgb_client, grove);
+    ret = grove_init_rgb(grove);
+    if (ret) {
+        dev_err(dev, "failed to init RGB, free resources\n");
+        goto free_device;
     }
 
     dev_info(dev, "%s finished\n", __func__);
@@ -297,10 +319,10 @@ static int grove_remove(struct i2c_client *client) {
         }
     }
 
-    /* if (grove->lcd_client) {
-     *     i2c_unregister_device(grove->lcd_client);
-     * }
-     * i2c_unregister_device(grove->rgb_client); */
+    // they are needed (as specified in the docs),
+    // but there are some issues using them right now
+    /* i2c_unregister_device(grove->rgb_client); */
+    /* i2c_unregister_device(grove->lcd_client); */
     
     device_destroy(grove_class, grove->devnum);
     /* module_put(grove->cdev.owner); */
@@ -313,7 +335,7 @@ static int grove_remove(struct i2c_client *client) {
 }
 
 static struct of_device_id grove_of_idtable[] = {
-    {.compatible = "grove,rgb"},
+    {.compatible = "grove,lcd"},
     { }
 };
 MODULE_DEVICE_TABLE(of, grove_of_idtable);
