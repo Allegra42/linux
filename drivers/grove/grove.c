@@ -122,6 +122,7 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     struct device *dev;
     struct color_t *color;
     struct string_t *string;
+    char tmp[LINE_SIZE+2];
     int ret = 0;
     int i = 0;
 
@@ -137,9 +138,9 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case GROVE_SET_COLOR:
 	    dev_info(dev, " set color\n");
 	    mutex_lock(&grove_mutex);
-	    if (copy_from_user(color, (const void *)arg, sizeof(struct color_t))) {
+	if (copy_from_user(color, (const void *)arg, sizeof(struct color_t))) {
 		goto inval;
-	    }
+	}
 	    grove->color = *color;
 	    dev_info(dev, "new color: r: 0x%x, g: 0x%x, b: 0x%x\n", color->red, color->green, color->blue);
 
@@ -148,78 +149,93 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		{GREEN, color->green},
 		{BLUE, color->blue},
 	    };
-	    for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
+	for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
 	       ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
-	       if (ret) {
+	if (ret) {
 		    dev_err(dev, "set new color failed\n");
-		    goto i2c_fail;
-	       }
-	    }
-	    break;
+		goto i2c_fail;
+	}
+	}
+	break;
 
 	case GROVE_GET_COLOR:
 	    dev_info(dev, " get color\n");
 	    mutex_lock(&grove_mutex);
-	    if (copy_to_user((void *)arg, (const void *)&grove->color, sizeof(struct color_t))) {
+	if (copy_to_user((void *)arg, (const void *)&grove->color, sizeof(struct color_t))) {
 		goto inval;
-	    }
-	    break;
+	}
+	break;
 
 	case GROVE_CLEAR_LCD:
 	    dev_info(dev, " clear lcd\n");
 	    mutex_lock(&grove_mutex);
-	    memset(grove->line_one, ' ', LINE_SIZE + 1);
-	    memset(grove->line_two, ' ', LINE_SIZE + 1);
+	    memset(grove->line_one, '\n', LINE_SIZE + 1);
+	    memset(grove->line_two, '\n', LINE_SIZE + 1);
 
 	    ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, 0x01);
-	    if (ret) {
+	if (ret) {
 		dev_err(dev, "clear display failed\n");
 		goto i2c_fail;
-	    }
-	    break;
+	}
+	break;
 
 	case GROVE_WRITE_FIRST_LINE:
 	    dev_info(dev, " write first line\n");
 	    mutex_lock(&grove_mutex);
-	    if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
+	if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
 		goto inval;
-	    }
-	    snprintf(grove->line_one, LINE_SIZE + 1, "%s", string->data);
-	    dev_info(dev, "first line is %s,  %s\n", string->data, grove->line_one);
+	}
 
-	    break;
+	ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0x80));
+	if (ret) {
+	dev_err(dev, "set position failed\n");
+	}
+	    snprintf(grove->line_one, sizeof(string->data), "%s\n", string->data);
+	snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_one);
+	i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
+
+	    dev_info(dev, "first line is %s,  %s tmp: %s\n", string->data, grove->line_one, tmp);
+
+	break;
 
 	case GROVE_WRITE_SECOND_LINE:
 	    dev_info(dev, " write second line\n");
 	    mutex_lock(&grove_mutex);
-	    if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
+	if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
 		goto inval;
-	    }
-	    snprintf(grove->line_two, LINE_SIZE + 1, "%s", string->data);
-	    dev_info(dev, "second line is %s\n", string->data);
+	}
+	ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0xc0));
+	if (ret) {
+	dev_err(dev, "set position failed\n");
+	}
+	    snprintf(grove->line_two, sizeof(string->data), "%s\n", string->data);
+	snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_two);
+	i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
 
-	    break;
+	    dev_info(dev, "second line is %s\n", tmp);
+
+	break;
 
 	case GROVE_READ_LCD:
 	    dev_info(dev, " read lcd\n");
 	    mutex_lock(&grove_mutex);
-	    snprintf(string->data, (LINE_SIZE*2) + 2, "%s\n%s\n", grove->line_one, grove->line_two);
-	    string->size = sizeof(string->data);
-	    if (copy_to_user((void *)arg, (const void *)string, sizeof(struct string_t))) {
+	strcpy(string->data, grove->line_one);
+	strcat(string->data, grove->line_two);
+	if (copy_to_user((void *)arg, (const void *)string, sizeof(struct string_t))) {
 		goto inval;
-	    }
-	    break;
+	}
+	break;
 
 	case GROVE_GET_LINE_SIZE:
 	    dev_info(dev, " get line size\n");
 	    mutex_lock(&grove_mutex);
-	    if (put_user(LINE_SIZE, (unsigned long *)arg)) {
+	if (put_user(LINE_SIZE, (unsigned long *)arg)) {
 		goto inval;
-	    }
-	    break;
+	}
+	break;
 
 	default:
-	    return -EINVAL;
+	return -EINVAL;
     }
 
     mutex_unlock(&grove_mutex);
@@ -260,24 +276,29 @@ static int grove_init_lcd(struct grove_t *grove)
 	    {LCD_CMD, 0x02},
 	    {LCD_CMD, 0x0c},
 	    {LCD_CMD, 0x28},
-	    {TXT_CMD, 'T'},
-	    {TXT_CMD, 'E'},
-	    {TXT_CMD, 'S'},
-	    {TXT_CMD, 'T'},
     };
 
     dev_info(&grove->lcd_client->dev, "%s\n", __func__);
 
     mutex_lock(&grove_mutex);
     for (i = 0; i < (int) (sizeof(cmds) / sizeof(*cmds)); i++) {
-	// This log message delays the i2c writes that much, the test is set correctly
-	dev_info(&grove->lcd_client->dev, "%s cmd 0x%x val 0x%x\n", __func__, cmds[i].cmd, cmds[i].val);
 	    ret = i2c_smbus_write_byte_data(grove->lcd_client, cmds[i].cmd, cmds[i].val);
 	if (ret) {
 		dev_err(&grove->lcd_client->dev, "failed to initialize the LCD\n");
 		goto fail;
 	}
     }
+    // Sometimes, the display has some issues with block writes like this.
+    // But this operation is less string parsing than sending single chars
+    // and for this, much nicer. Also, it is more comprehensible to Zircon,
+    // where exactly such operations are working, even with a higher clock
+    // cycle. For this, the Linux driver uses also block writes, without the
+    // need for additional string parsing and artifical delays, and if the
+    // result on the Grove LCD is not ok, we take a look on the Oscilloscope.
+    char init[] = "@Init";
+
+    i2c_master_send(grove->lcd_client, init, sizeof(init)-1);
+
 fail:
     mutex_unlock(&grove_mutex);
     return ret;

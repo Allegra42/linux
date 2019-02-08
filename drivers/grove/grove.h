@@ -22,8 +22,8 @@ struct color_t {
 };
 
 struct string_t {
+    uint8_t position;
     char data[(LINE_SIZE*2) + 2];
-    uint8_t size;
 };
 
 #endif /* __GROVE_H__ */
