@@ -349,8 +349,8 @@ static struct file_operations grove_fops = {
     .owner          = THIS_MODULE,
     .open           = grove_open,
     .release        = grove_release,
-    .read           = grove_read,
-    .write          = grove_write,
+    /* .read           = grove_read, */
+    /* .write          = grove_write, */
     .unlocked_ioctl = grove_ioctl,
 };
 
