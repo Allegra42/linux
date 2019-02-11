@@ -24,97 +24,101 @@ static struct class *grove_class;
 static DEFINE_MUTEX(grove_mutex);
 
 
-ssize_t grove_read(struct file *file, char __user *buf, size_t size, loff_t *off)
-{
-    struct grove_t *grove;
-    char send[100];
-    int actual, not_copied = 0;
+/* "read()" and "write()" system calls do not make sense in such a combined driver as the Grove
+ * LCD RGB backlight driver it is at all. What means "write()"? do you have to learn a special
+ * syntax for RGB writes? Using "ioctl()" to define much clearer interfaces to this driver is
+ * the better solution in this case. In fact, this calls should be deleted completely, but as
+ * there are some calls in the normal (not PDev) variants of Zircon, we let them here as a comment
+ * for comparision. A better way would be deleting them here and do a variant like done for Zircon. */
 
-    grove = file->private_data;
+/* ssize_t grove_read(struct file *file, char __user *buf, size_t size, loff_t *off)
+ * {
+ *     struct grove_t *grove;
+ *     char send[100];
+ *     int actual, not_copied = 0;
+ *
+ *     grove = file->private_data;
+ *
+ *     actual = sprintf(send, "Grove LCD RGB Status:\nRed: 0x%x\nGreen: 0x%x\nBlue: 0x%x\nDisplay Text:\n%s\n%s\n",
+ *         grove->color.red, grove->color.green, grove->color.blue, grove->line_one, grove->line_two);
+ *
+ *     if ((int)*off > actual) {
+ *     return 0;
+ *     }
+ *     actual = min(actual+1, (int)size);
+ *
+ *     not_copied = copy_to_user(buf, send, actual);
+ *     if (not_copied) {
+ *     return -EFAULT;
+ *     }
+ *     *off += actual;
+ *
+ *     return actual;
+ * } */
 
-    actual = sprintf(send, "Grove LCD RGB Status:\nRed: 0x%x\nGreen: 0x%x\nBlue: 0x%x\nDisplay Text:\n%s\n%s\n",
-	    grove->color.red, grove->color.green, grove->color.blue, grove->line_one, grove->line_two);
-
-    if ((int)*off > actual) {
-	return 0;
-    }
-    actual = min(actual+1, (int)size);
-
-    not_copied = copy_to_user(buf, send, actual);
-    if (not_copied) {
-	return -EFAULT;
-    }
-    *off += actual;
-
-    return actual;
-}
-
-ssize_t grove_write(struct file *file, const char __user *buf, size_t size, loff_t *off)
-{
-    // Especially write is more meaningful for the LCD part, but as these is not working at the moment
-    // we one for RGB as an example and for testing.
-
-    struct grove_t *grove;
-    int ret = 0;
-    int i = 0;
-    int actual = 0;
-    int not_copied = 0;
-    char kbuf[15]; // assumed for the rgb string, change for real lcd impl.
-    char *tmp;
-    char *ptr;
-
-    grove = file->private_data;
-
-    if (*off > 15) {
-	return -EINVAL;
-    }
-
-    actual = min(15, (int)size);
-    not_copied = copy_from_user(kbuf, buf, actual);
-    if (not_copied) {
-	return -EFAULT;
-    }
-
-    *off += size;
-    tmp = kbuf;
-
-    mutex_lock(&grove_mutex);
-
-    while ((ptr = strsep(&tmp, " ")) !=  NULL) {
-	if (i == 0 && ptr[0] == 'r') {
-		ret = kstrtou8(++ptr, 10, &grove->color.red);
-	} else if (i == 1 && ptr[0] == 'g') {
-		ret = kstrtou8(++ptr, 10, &grove->color.green);
-	} else if (i == 2 && ptr[0] == 'b') {
-		ret = kstrtou8(++ptr, 10, &grove->color.blue);
-	} else {
-		pr_err("Wrong input format!\n Use r<0-255> g<> b<>\n");
-		goto fail;
-	}
-	    i++;
-    }
-
-    struct i2c_cmd_t cmds[] = {
-	    {RED, grove->color.red},
-	    {GREEN, grove->color.green},
-	    {BLUE, grove->color.blue},
-    };
-
-    for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
-	    ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
-	if (ret) {
-		dev_err(&grove->rgb_client->dev, "failed to set the RGB backlight\n");
-		goto fail;
-	}
-    }
-
-    mutex_unlock(&grove_mutex);
-    return size;
-
-fail:
-    mutex_unlock(&grove_mutex);
-    return ret;
-}
+/* ssize_t grove_write(struct file *file, const char __user *buf, size_t size, loff_t *off)
+ * {
+ *     struct grove_t *grove;
+ *     int ret = 0;
+ *     int i = 0;
+ *     int actual = 0;
+ *     int not_copied = 0;
+ *     char kbuf[15];
+ *     char *tmp;
+ *     char *ptr;
+ *
+ *     grove = file->private_data;
+ *
+ *     if (*off > 15) {
+ *     return -EINVAL;
+ *     }
+ *
+ *     actual = min(15, (int)size);
+ *     not_copied = copy_from_user(kbuf, buf, actual);
+ *     if (not_copied) {
+ *     return -EFAULT;
+ *     }
+ *
+ *     *off += size;
+ *     tmp = kbuf;
+ *
+ *     mutex_lock(&grove_mutex);
+ *
+ *     while ((ptr = strsep(&tmp, " ")) !=  NULL) {
+ *     if (i == 0 && ptr[0] == 'r') {
+ *         ret = kstrtou8(++ptr, 10, &grove->color.red);
+ *     } else if (i == 1 && ptr[0] == 'g') {
+ *         ret = kstrtou8(++ptr, 10, &grove->color.green);
+ *     } else if (i == 2 && ptr[0] == 'b') {
+ *         ret = kstrtou8(++ptr, 10, &grove->color.blue);
+ *     } else {
+ *         pr_err("Wrong input format!\n Use r<0-255> g<> b<>\n");
+ *         goto fail;
+ *     }
+ *         i++;
+ *     }
+ *
+ *     struct i2c_cmd_t cmds[] = {
+ *         {RED, grove->color.red},
+ *         {GREEN, grove->color.green},
+ *         {BLUE, grove->color.blue},
+ *     };
+ *
+ *     for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
+ *         ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
+ *     if (ret) {
+ *         dev_err(&grove->rgb_client->dev, "failed to set the RGB backlight\n");
+ *         goto fail;
+ *     }
+ *     }
+ *
+ *     mutex_unlock(&grove_mutex);
+ *     return size;
+ *
+ * fail:
+ *     mutex_unlock(&grove_mutex);
+ *     return ret;
+ * } */
 
 static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
@@ -138,9 +142,9 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case GROVE_SET_COLOR:
 	    dev_info(dev, " set color\n");
 	    mutex_lock(&grove_mutex);
-	if (copy_from_user(color, (const void *)arg, sizeof(struct color_t))) {
-		goto inval;
-	}
+	    if (copy_from_user(color, (const void *)arg, sizeof(struct color_t))) {
+		    goto inval;
+	    }
 	    grove->color = *color;
 	    dev_info(dev, "new color: r: 0x%x, g: 0x%x, b: 0x%x\n", color->red, color->green, color->blue);
 
@@ -149,22 +153,22 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		{GREEN, color->green},
 		{BLUE, color->blue},
 	    };
-	for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
+	    for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
 	       ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
-	if (ret) {
-		    dev_err(dev, "set new color failed\n");
-		goto i2c_fail;
-	}
-	}
-	break;
+	        if (ret) {
+		        dev_err(dev, "set new color failed\n");
+		        goto i2c_fail;
+	        }
+	    }
+	    break;
 
 	case GROVE_GET_COLOR:
 	    dev_info(dev, " get color\n");
 	    mutex_lock(&grove_mutex);
-	if (copy_to_user((void *)arg, (const void *)&grove->color, sizeof(struct color_t))) {
-		goto inval;
-	}
-	break;
+	    if (copy_to_user((void *)arg, (const void *)&grove->color, sizeof(struct color_t))) {
+		    goto inval;
+	    }
+	    break;
 
 	case GROVE_CLEAR_LCD:
 	    dev_info(dev, " clear lcd\n");
@@ -173,70 +177,74 @@ static long grove_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	    memset(grove->line_two, '\n', LINE_SIZE + 1);
 
 	    ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, 0x01);
-	if (ret) {
-		dev_err(dev, "clear display failed\n");
-		goto i2c_fail;
-	}
-	break;
+	    if (ret) {
+		    dev_err(dev, "clear display failed\n");
+		    goto i2c_fail;
+	    }
+	    break;
 
 	case GROVE_WRITE_FIRST_LINE:
 	    dev_info(dev, " write first line\n");
 	    mutex_lock(&grove_mutex);
-	if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
-		goto inval;
-	}
+	    if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
+		    goto inval;
+	    }
 
-	ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0x80));
-	if (ret) {
-	dev_err(dev, "set position failed\n");
-	}
+	    ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0x80));
+	    if (ret) {
+	        dev_err(dev, "set position failed\n");
+            goto i2c_fail;
+	    }
 	    snprintf(grove->line_one, sizeof(string->data), "%s\n", string->data);
-	snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_one);
-	i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
-
-	    dev_info(dev, "first line is %s,  %s tmp: %s\n", string->data, grove->line_one, tmp);
-
-	break;
+	    snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_one);
+	    ret = i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
+        if (ret < 0) {
+            dev_err(dev, "write first line failed\n");
+            goto i2c_fail;
+        }
+	    break;
 
 	case GROVE_WRITE_SECOND_LINE:
 	    dev_info(dev, " write second line\n");
 	    mutex_lock(&grove_mutex);
-	if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
-		goto inval;
-	}
-	ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0xc0));
-	if (ret) {
-	dev_err(dev, "set position failed\n");
-	}
+	    if (copy_from_user(string, (const void *)arg, sizeof(struct string_t))) {
+		    goto inval;
+	    }
+	    ret = i2c_smbus_write_byte_data(grove->lcd_client, LCD_CMD, (string->position | 0xc0));
+	    if (ret) {
+	        dev_err(dev, "set position failed\n");
+            goto i2c_fail;
+	    }
 	    snprintf(grove->line_two, sizeof(string->data), "%s\n", string->data);
-	snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_two);
-	i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
-
-	    dev_info(dev, "second line is %s\n", tmp);
-
-	break;
+	    snprintf(tmp, LINE_SIZE + 2, "@%s", grove->line_two);
+	    ret = i2c_master_send(grove->lcd_client, tmp, strlen(tmp)-1);
+        if (ret < 0) {
+            dev_err(dev, "write first line failed\n");
+            goto i2c_fail;
+        }
+	    break;
 
 	case GROVE_READ_LCD:
 	    dev_info(dev, " read lcd\n");
 	    mutex_lock(&grove_mutex);
-	strcpy(string->data, grove->line_one);
-	strcat(string->data, grove->line_two);
-	if (copy_to_user((void *)arg, (const void *)string, sizeof(struct string_t))) {
-		goto inval;
-	}
-	break;
+	    strcpy(string->data, grove->line_one);
+	    strcat(string->data, grove->line_two);
+	    if (copy_to_user((void *)arg, (const void *)string, sizeof(struct string_t))) {
+		    goto inval;
+	    }
+	    break;
 
 	case GROVE_GET_LINE_SIZE:
 	    dev_info(dev, " get line size\n");
 	    mutex_lock(&grove_mutex);
-	if (put_user(LINE_SIZE, (unsigned long *)arg)) {
-		goto inval;
-	}
-	break;
+	    if (put_user(LINE_SIZE, (unsigned long *)arg)) {
+		    goto inval;
+	    }
+	    break;
 
 	default:
-	return -EINVAL;
-    }
+	    return -EINVAL;
+    } // end switch
 
     mutex_unlock(&grove_mutex);
     return 0;
@@ -283,18 +291,20 @@ static int grove_init_lcd(struct grove_t *grove)
     mutex_lock(&grove_mutex);
     for (i = 0; i < (int) (sizeof(cmds) / sizeof(*cmds)); i++) {
 	    ret = i2c_smbus_write_byte_data(grove->lcd_client, cmds[i].cmd, cmds[i].val);
-	if (ret) {
-		dev_err(&grove->lcd_client->dev, "failed to initialize the LCD\n");
-		goto fail;
-	}
+	    if (ret) {
+		    dev_err(&grove->lcd_client->dev, "failed to initialize the LCD\n");
+		    goto fail;
+	    }
     }
-    // Sometimes, the display has some issues with block writes like this.
-    // But this operation is less string parsing than sending single chars
-    // and for this, much nicer. Also, it is more comprehensible to Zircon,
-    // where exactly such operations are working, even with a higher clock
-    // cycle. For this, the Linux driver uses also block writes, without the
-    // need for additional string parsing and artifical delays, and if the
-    // result on the Grove LCD is not ok, we take a look on the Oscilloscope.
+
+    /* Sometimes, the display has some issues with block writes like this.
+     * But this operation is less string parsing than sending single chars
+     * and for this, much nicer. Also, it is more comprehensible to Zircon,
+     * where exactly such operations are working, even with a higher clock
+     * cycle. For this, the Linux driver uses also block writes, without the
+     * need for additional string parsing and artifical delays, and if the
+     * result on the Grove LCD is not ok, we take a look on the Oscilloscope.
+     * Or use a Raspi... */
     char init[] = "@Init";
 
     i2c_master_send(grove->lcd_client, init, sizeof(init)-1);
@@ -325,10 +335,10 @@ static int grove_init_rgb(struct grove_t *grove)
     mutex_lock(&grove_mutex);
     for (i = 0; i < (int)(sizeof(cmds) / sizeof(*cmds)); i++) {
 	    ret = i2c_smbus_write_byte_data(grove->rgb_client, cmds[i].cmd, cmds[i].val);
-	if (ret) {
-		dev_err(&grove->rgb_client->dev, "failed to initialize the RGB backlight\n");
-		goto fail;
-	}
+	    if (ret) {
+		    dev_err(&grove->rgb_client->dev, "failed to initialize the RGB backlight\n");
+		    goto fail;
+	    }
     }
 fail:
     mutex_unlock(&grove_mutex);
@@ -345,6 +355,7 @@ static struct file_operations grove_fops = {
 };
 
 // new API? we do not need i2c_device_id...
+// static int grove_probe(struct i2c_client *client)
 static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
     int ret = 0;
@@ -355,31 +366,31 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
     grove = kzalloc(sizeof(struct grove_t), GFP_KERNEL);
     if (IS_ERR(grove)) {
 	    dev_err(dev, "failed to allocate a private memory area for the device\n");
-	return -ENOMEM;
+	    return -ENOMEM;
     }
 
     grove_class = class_create(THIS_MODULE, "grove");
     if (IS_ERR(grove_class)) {
 	    dev_err(dev, "failed to create sysfs class\n");
-	return -ENOMEM;
+	    return -ENOMEM;
     }
 
     if (alloc_chrdev_region(&grove->devnum, 0, 1, "grove") < 0) {
 	    dev_err(dev, "failed to allocate char dev region\n");
-	goto free_class;
+	    goto free_class;
     }
 
     cdev_init(&grove->cdev, &grove_fops);
     grove->cdev.owner = THIS_MODULE;
 
     if (cdev_add(&grove->cdev, grove->devnum, 1)) {
-	goto free_cdev;
+	    goto free_cdev;
     }
 
     device = device_create(grove_class, NULL, grove->devnum, "%s", "grove");
     if (IS_ERR(device)) {
 	    dev_err(dev, "failed to create dev entry\n");
-	goto free_cdev;
+	    goto free_cdev;
     }
 
     grove->lcd_client = client;
@@ -387,30 +398,23 @@ static int grove_probe(struct i2c_client *client, const struct i2c_device_id *id
     ret = grove_init_lcd(grove);
     if (ret) {
 	    dev_err(dev, "failed to init LCD, free resources\n");
-	goto free_device;
+	    goto free_device;
     }
 
-    // The Grove-LCD RGB backlight v4.0 is a composed device made from two individual I2C controllers.
-    // Each controller has two addresses, but only one each controller are of interest.
-    // To control such a device with only one driver, we use the new (v4.8) API
-    // "i2c_new_secondary_device".
-    // Unfortunately, the HiKey has some issues detecting all attached slave addresses, just the one
-    // used to controll the RGB part is reliabily available. That's the reason why it is picked as
-    // main device (matching).
-    // Henc the following handling is not 100% as it should be. It is a fail-safe, variant where the
-    // second I2C slave is optional.
+    /* The Grove-LCD RGB backlight v4.0 is a composed device made from two individual I2C controllers.
+     * Each controller has two addresses, but only one each controller are of interest.
+     * To control such a device with only one driver, we use the new (v4.8) API
+     * "i2c_new_secondary_device". */
     grove->rgb_client = i2c_new_secondary_device(grove->lcd_client, "grovergb", 0x62);
     if (grove->rgb_client == NULL) {
-	return -ENODEV;
 	    dev_info(dev, "can not fetch secondary I2C device\n");
+	    return -ENODEV;
     }
-    // If we are sure the second device is / should be available, the else is not needed
-    // Instead, uncomment the return above, make dev_info to dev_err
     i2c_set_clientdata(grove->rgb_client, grove);
     ret = grove_init_rgb(grove);
     if (ret) {
 	    dev_err(dev, "failed to init RGB, free resources\n");
-	goto free_device;
+	    goto free_device;
     }
 
     dev_info(dev, "%s finished\n", __func__);
@@ -452,10 +456,10 @@ static int grove_remove(struct i2c_client *client)
 
     for (i = 0; i < (int)(sizeof(rgb_cmds) / sizeof(*rgb_cmds)); i++) {
 	    ret = i2c_smbus_write_byte_data(rgb_client, rgb_cmds[i].cmd, rgb_cmds[i].val);
-	if (ret) {
-		dev_err(&client->dev, "failed to deinitialize the RGB backlight\n");
-		return ret;
-	}
+	    if (ret) {
+		    dev_err(&client->dev, "failed to deinitialize the RGB backlight\n");
+		    return ret;
+	    }
     }
 
     ret = i2c_smbus_write_byte_data(lcd_client, LCD_CMD, 0x01);
@@ -477,7 +481,6 @@ static struct of_device_id grove_of_idtable[] = {
 };
 MODULE_DEVICE_TABLE(of, grove_of_idtable);
 
-
 static struct i2c_driver grove_driver = {
     .driver = {
 	    .name = "grove",
@@ -485,6 +488,7 @@ static struct i2c_driver grove_driver = {
 	    .of_match_table = grove_of_idtable
     },
     .probe = grove_probe,
+    /* .probe_new = grove_probe, */
     .remove = grove_remove,
 };
 
