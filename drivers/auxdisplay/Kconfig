@@ -16,6 +16,12 @@ menuconfig AUXDISPLAY
 
 if AUXDISPLAY
 
+config CONFIG_GROVE
+    tristate "Grove-LCD RGB backlight v4.0 Support"
+    default m
+    ---help---
+        Adds the driver for the Grove-LCD RGB backlight v4.0 to the kernel.
+
 config HD44780
 	tristate "HD44780 Character LCD support"
 	depends on GPIOLIB || COMPILE_TEST

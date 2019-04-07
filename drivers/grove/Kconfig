@@ -1,5 +1,0 @@
-config CONFIG_GROVE
-    tristate "Grove-LCD RGB backlight v4.0 Support"
-    default m
-    help
-        Adds the driver for the Grove-LCD RGB backlight v4.0 to the kernel.
